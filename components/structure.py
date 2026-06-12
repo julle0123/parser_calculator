@@ -7,57 +7,43 @@
 - 페이지 커버리지: element 없는 페이지 탐지 (10점)
 - 좌표 유효성: 정규화 범위(0~1) 벗어난 bounding box 탐지 (8점)
 - 표 구조: HTML table 행별 셀 수 불일치 탐지 (7점)
+
+bs4(BeautifulSoup)로 malformed HTML에도 안정적으로 표 파싱.
 """
 
-from html.parser import HTMLParser
 import statistics
+from bs4 import BeautifulSoup
 
 
-class _TableRowParser(HTMLParser):
-    """HTML table에서 행별 셀 수 추출 (colspan 반영)"""
-
-    def __init__(self):
-        super().__init__()
-        self.row_cell_counts: list[int] = []
-        self._in_table = False
-        self._current_row_cells = 0
-        self._in_row = False
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "table":
-            self._in_table = True
-        elif tag == "tr" and self._in_table:
-            self._in_row = True
-            self._current_row_cells = 0
-        elif tag in ("td", "th") and self._in_row:
-            colspan = 1
-            for name, val in attrs:
-                if name == "colspan" and val and val.isdigit():
-                    colspan = int(val)
-            self._current_row_cells += colspan
-
-    def handle_endtag(self, tag):
-        if tag == "tr" and self._in_row:
-            if self._current_row_cells > 0:
-                self.row_cell_counts.append(self._current_row_cells)
-            self._in_row = False
-        elif tag == "table":
-            self._in_table = False
+def _get_row_cell_counts(html: str) -> list[int]:
+    """
+    HTML table에서 행별 셀 수 추출 (colspan 반영).
+    bs4로 파싱해 malformed HTML에도 안정적으로 동작.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        counts = []
+        for row in soup.find_all("tr"):
+            cell_count = 0
+            for cell in row.find_all(["td", "th"]):
+                colspan = cell.get("colspan", 1)
+                try:
+                    cell_count += int(colspan)
+                except (ValueError, TypeError):
+                    cell_count += 1
+            if cell_count > 0:
+                counts.append(cell_count)
+        return counts
+    except Exception:
+        return []
 
 
 def _is_table_structure_valid(html: str) -> bool:
     """
-    True = 정상, False = 구조 이상
+    True = 정상, False = 구조 이상.
     행별 셀 수의 표준편차가 평균의 50% 초과 시 이상으로 판단.
-    colspan 반영, 빈 행 무시.
     """
-    parser = _TableRowParser()
-    try:
-        parser.feed(html)
-    except Exception:
-        return False
-
-    counts = parser.row_cell_counts
+    counts = _get_row_cell_counts(html)
     if len(counts) < 2:
         return True
 
@@ -72,8 +58,12 @@ def _is_table_structure_valid(html: str) -> bool:
 def _is_valid_coord(coord: dict) -> bool:
     x = coord.get("x", -1)
     y = coord.get("y", -1)
-    return isinstance(x, (int, float)) and isinstance(y, (int, float)) \
-        and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0
+    return (
+        isinstance(x, (int, float))
+        and isinstance(y, (int, float))
+        and 0.0 <= x <= 1.0
+        and 0.0 <= y <= 1.0
+    )
 
 
 def score_structure(elements: list[dict], total_pages: int) -> dict:
@@ -89,7 +79,7 @@ def score_structure(elements: list[dict], total_pages: int) -> dict:
         return result
 
     # 페이지 커버리지 (10점)
-    covered_pages = set(el.get("page", 0) for el in elements if el.get("page"))
+    covered_pages = set(el.get("page") for el in elements if el.get("page"))
     empty_page_count = max(0, total_pages - len(covered_pages))
     empty_ratio = empty_page_count / total_pages if total_pages > 0 else 0.0
 
@@ -101,12 +91,12 @@ def score_structure(elements: list[dict], total_pages: int) -> dict:
         page_score = 0
 
     # 좌표 유효성 (8점)
-    invalid_coord_count = 0
-    for el in elements:
-        coords = el.get("coordinates", [])
-        if coords and any(not _is_valid_coord(c) for c in coords):
-            invalid_coord_count += 1
-
+    invalid_coord_count = sum(
+        1 for el in elements
+        if el.get("coordinates") and any(
+            not _is_valid_coord(c) for c in el["coordinates"]
+        )
+    )
     coord_invalid_ratio = invalid_coord_count / len(elements)
 
     if coord_invalid_ratio == 0.0:
@@ -118,11 +108,10 @@ def score_structure(elements: list[dict], total_pages: int) -> dict:
 
     # 표 구조 (7점)
     table_elements = [el for el in elements if el.get("category") == "table"]
-    broken_table_count = 0
-    for el in table_elements:
-        html = el.get("content", {}).get("html", "")
-        if html and not _is_table_structure_valid(html):
-            broken_table_count += 1
+    broken_table_count = sum(
+        1 for el in table_elements
+        if not _is_table_structure_valid(el.get("content", {}).get("html", ""))
+    )
 
     if not table_elements:
         table_score = 7

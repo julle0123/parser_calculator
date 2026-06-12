@@ -1,6 +1,6 @@
 # 업스테이지 Document Parse 품질 평가 시스템
 
-업스테이지(Upstage) Document Parse API의 응답 JSON을 입력받아
+업스테이지(Upstage) Document Parse API의 JSON 응답을 입력받아
 파싱 품질을 수치화하는 자동 평가 도구.
 
 ---
@@ -22,21 +22,28 @@
 
 ---
 
-## 설치 및 실행
-
-외부 라이브러리 의존성 없음. Python 3.10 이상 표준 라이브러리만 사용.
+## 설치
 
 ```bash
-# 기본 실행
-python evaluate.py <파싱결과.json>
+pip install pdfplumber beautifulsoup4 numpy
+# 내부망: whl 파일로 반입 후 pip install *.whl
+```
 
-# PDF 페이지 수 지정 (권장 — 누락 페이지 정확히 감지)
+---
+
+## 실행
+
+```bash
+# PDF로 페이지 수 자동 추출 (권장)
+python evaluate.py <파싱결과.json> --pdf document.pdf
+
+# 페이지 수 직접 지정
 python evaluate.py <파싱결과.json> --pages 10
 
 # 상세 결과 JSON 저장
-python evaluate.py <파싱결과.json> --pages 10 --output result.json
+python evaluate.py <파싱결과.json> --pdf document.pdf --output result.json
 
-# 누적 점수 기반 z-score 계산 (30개 이상 누적 후 유효)
+# z-score 계산 (30개 이상 누적 후 유효)
 python evaluate.py <파싱결과.json> --history history.json
 ```
 
@@ -47,6 +54,7 @@ python evaluate.py <파싱결과.json> --history history.json
 ### ① OCR 신뢰도 — 35점
 
 업스테이지 파서가 제공하는 유일한 직접 품질 신호 (`words[].confidence`).
+numpy로 분포를 분석하며, p10(하위 10% 백분위수)은 점수 미반영 참고 지표로 제공.
 
 | 지표 | 만점 | 기준 |
 |------|------|------|
@@ -55,7 +63,7 @@ python evaluate.py <파싱결과.json> --history history.json
 
 ### ② 구조 무결성 — 25점
 
-파싱 결과의 기술적 완전성 검증.
+파싱 결과의 기술적 완전성 검증. bs4(BeautifulSoup)로 malformed HTML에도 안정적으로 표 파싱.
 
 | 지표 | 만점 | 기준 |
 |------|------|------|
@@ -65,7 +73,7 @@ python evaluate.py <파싱결과.json> --history history.json
 
 ### ③ 텍스트 품질 — 20점
 
-내용 이상 징후 간접 감지. ground truth 없이 텍스트 자체를 분석.
+ground truth 없이 텍스트 자체의 이상 징후 감지.
 
 | 지표 | 만점 | 기준 |
 |------|------|------|
@@ -73,9 +81,9 @@ python evaluate.py <파싱결과.json> --history history.json
 | 깨진 문자 비율 | 7점 | 0.5%↓→7 / 1.0%↓→4 / 초과→0 |
 | html↔markdown 일관성 | 6점 | 유사도 90%↑→6 / 70%↑→3 / 미만→0 |
 
-> **한글 비율**: 한국 금융 문서에서 한글 비율이 낮으면 OCR 실패 간접 신호
-> **깨진 문자**: □■口 등 대체문자, 한글 자모(ㄱㄴ...) 단독 등장 감지
-> **html↔markdown**: 동일 element의 두 포맷 간 텍스트가 크게 다르면 처리 오류 신호
+> **한글 비율**: 한국 금융 문서에서 낮으면 OCR 실패 간접 신호
+> **깨진 문자**: □■口 등 대체문자, 한글 자모(ㄱㄴ…) 단독 등장 감지
+> **html↔markdown**: 동일 element의 두 포맷 텍스트 불일치 → 내부 처리 오류 신호
 
 ### ④ 도메인 패턴 — 20점
 
@@ -83,11 +91,11 @@ python evaluate.py <파싱결과.json> --history history.json
 
 | 지표 | 만점 | 기준 |
 |------|------|------|
-| 필수 패턴 존재 (5개 × 2점) | 10점 | 날짜/비율/금액/위험/수수료 패턴 |
+| 필수 패턴 존재 (5개 × 2점) | 10점 | 날짜 / 비율(%) / 금액 / 위험 / 수수료 |
 | 수수료 범위 유효성 | 5점 | 추출값 0~30% 범위 내 90%↑ |
 | 위험등급 범위 유효성 | 5점 | 추출값 1~6 범위 내 90%↑ |
 
-> **패턴 미발견 시**: 문서 유형 특성일 수 있으므로 해당 점수의 절반 부여
+> 패턴 미발견 시: 문서 유형 특성일 수 있으므로 해당 점수의 절반 부여
 
 ---
 
@@ -104,8 +112,6 @@ python evaluate.py <파싱결과.json> --history history.json
 
 ## 문서 카테고리별 패턴 커스터마이징
 
-도메인 패턴은 문서 유형에 따라 교체 가능:
-
 ```python
 from scorer import evaluate
 
@@ -113,15 +119,12 @@ custom = {
     "contract_date": r"계약일\s*:\s*\d{4}",
     "account_no":    r"\d{3}-\d{4}-\d{7}",
 }
-
 result = evaluate(parsed_json, total_pages=5, custom_patterns=custom)
 ```
 
 ---
 
 ## z-score 이상 감지 (30개 이상 누적 후 권장)
-
-절댓값 점수와 별개로, 누적 문서 대비 이상값 탐지:
 
 ```python
 from scorer import compute_zscore
@@ -138,12 +141,13 @@ z = compute_zscore(current_score, history)
 ```
 parser_cal/
 ├── evaluate.py          # CLI 진입점
-├── scorer.py            # 컴포넌트 오케스트레이션 + 등급 판정
+├── scorer.py            # 컴포넌트 오케스트레이션 + 등급 판정 + z-score
 ├── components/
-│   ├── confidence.py    # ① OCR 신뢰도
-│   ├── structure.py     # ② 구조 무결성
-│   ├── text_quality.py  # ③ 텍스트 품질
-│   └── domain.py        # ④ 도메인 패턴
+│   ├── confidence.py    # ① OCR 신뢰도 (35점)
+│   ├── structure.py     # ② 구조 무결성 (25점)
+│   ├── text_quality.py  # ③ 텍스트 품질 (20점)
+│   └── domain.py        # ④ 도메인 패턴 (20점)
+├── requirements.txt
 └── README.md
 ```
 
@@ -174,14 +178,15 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 ### pdfplumber pseudo-GT
 
 **방법**: pdfplumber로 PDF에서 텍스트를 직접 추출해 Upstage 출력과 NED 비교.
-원본 PDF가 있으므로 시도 검토.
 
 **불가 이유 (복수)**:
 1. **순환 논리**: 업스테이지 파서를 쓰는 이유가 pdfplumber의 한계 때문인데, 더 성능 낮은 도구로 평가하는 구조.
 2. **읽기 순서 오류**: pdfplumber는 PDF 내부 저장 순서로 추출하므로 시각적 읽기 순서와 불일치. 다단 컬럼, 사이드바에서 심각.
 3. **표 추출 품질**: pdfplumber의 표 추출은 병합 셀, 복잡한 테두리에서 자주 실패.
 4. **한글 인코딩**: 커스텀 폰트 인코딩 사용 PDF에서 깨진 문자 출력.
-5. **pdfplumber가 틀리고 Upstage가 맞아도** NED 점수가 낮게 나오는 역방향 오류 발생 가능.
+5. **역방향 오류**: pdfplumber가 틀리고 Upstage가 맞아도 NED 점수가 낮게 나오는 문제.
+
+> pdfplumber는 현재 **페이지 수 추출 용도로만** 사용 (텍스트 비교 불가).
 
 ---
 
@@ -197,7 +202,7 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 
 **방법**: RAG 파이프라인 품질 평가 프레임워크. Faithfulness, Contextual Recall 등.
 
-**불가 이유**: 내부망, LLM 호출 필요. RAG 구조가 아닌 단순 파싱 평가에 맞지 않음.
+**불가 이유**: 내부망, LLM 호출 필요.
 
 ---
 
@@ -211,7 +216,7 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 
 ### BERTScore
 
-**방법**: BERT 임베딩 기반 시맨틱 유사도. 표현이 달라도 의미가 같으면 높은 점수.
+**방법**: BERT 임베딩 기반 시맨틱 유사도.
 
 **불가 이유**: 비교 대상(참조 텍스트 또는 ground truth) 필요. 단독으로는 사용 불가.
 
@@ -227,8 +232,7 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 
 ### 인간 샘플링 검수
 
-**방법**: 자동 평가를 통과한 문서 일부를 사람이 직접 검수해 자동화 오류를 모니터링.
-가장 신뢰도 높은 보완책.
+**방법**: 자동 평가를 통과한 문서 일부를 사람이 직접 검수.
 
 **불가 이유**: 검수 인력/리소스 없음.
 
@@ -239,6 +243,24 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 **방법**: 누적 문서 점수 분포에서 z-score < -2.0인 문서를 이상으로 판단.
 
 **불가 이유**: 단독으로는 기준선(baseline)이 없어 초기 운영 시 무의미. 절댓값 점수와 병행해야 유효하므로 보조 기능으로만 탑재.
+
+---
+
+### rapidfuzz (채택 검토 후 제거)
+
+**방법**: html↔markdown 일관성 계산에 SequenceMatcher 대신 사용.
+
+**제거 이유**: html↔markdown 일관성 자체가 약한 신호인데, 이를 더 정확히 측정해도 전체 시스템 신뢰도에 변화 없음. 의존성 비용 대비 실익 없음.
+
+---
+
+### langdetect (채택 검토 후 제거)
+
+**방법**: 파싱 텍스트 언어를 감지해 한국어 여부 직접 판단.
+
+**제거 이유**:
+1. **비결정성**: seed 고정 없이는 같은 텍스트에 다른 결과 가능 → 점수 시스템에 부적합.
+2. **한글 비율 지표와 중복**: 한글 문자 비율이 높으면 langdetect도 ko 반환. 독립적인 추가 신호를 제공하지 않음.
 
 ---
 
