@@ -1,0 +1,37 @@
+# 파싱 결과 데이터
+*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 가상환경
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 테스트/커버리지
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 로그
+*.log
