@@ -31,6 +31,21 @@ def _get_row_cell_counts(html: str) -> list[int]:
         return []
 
 
+def _describe_table_anomaly(counts: list[int]) -> str:
+    if not counts:
+        return "표 구조를 파악할 수 없습니다."
+    max_val = max(counts)
+    max_idx = counts.index(max_val)
+    rest = [c for i, c in enumerate(counts) if i != max_idx]
+    avg_rest = round(sum(rest) / len(rest), 1) if rest else 0
+    row_label = f"{max_idx + 1}번째 행"
+    return (
+        f"표의 {row_label}에 내용이 비정상적으로 몰려 있습니다. "
+        f"({row_label}: {max_val}칸, 나머지 행 평균: {avg_rest}칸) "
+        f"셀 병합이 많은 복잡한 표에서 파싱이 구조를 제대로 인식하지 못했을 가능성이 있습니다."
+    )
+
+
 def _is_table_structure_valid(html: str) -> bool:
     counts = _get_row_cell_counts(html)
     if len(counts) < 2:
@@ -125,10 +140,24 @@ def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]
 
     table_elements = [el for el in elements if el.get("category") == "table"]
     if table_elements:
-        broken_count = sum(
-            1 for el in table_elements
-            if not _is_table_structure_valid(el.get("content", {}).get("html", ""))
-        )
+        broken_info = []
+        for el in table_elements:
+            html = el.get("content", {}).get("html", "")
+            counts = _get_row_cell_counts(html)
+            if len(counts) >= 2:
+                mean = statistics.mean(counts)
+                stdev = statistics.stdev(counts)
+                cv = stdev / mean if mean else 0
+                if cv > 0.5:
+                    reason = _describe_table_anomaly(counts)
+                    broken_info.append({
+                        "page": el.get("page"),
+                        "cv": round(cv, 3),
+                        "row_cell_counts": counts[:8],
+                        "reason": reason,
+                    })
+
+        broken_count = len(broken_info)
         broken_ratio = broken_count / len(table_elements)
 
         if broken_ratio == 0.0:
@@ -146,6 +175,7 @@ def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]
                 "total_tables": len(table_elements),
                 "broken_tables": broken_count,
                 "broken_ratio": round(broken_ratio, 4),
+                "broken_table_details": broken_info,
             },
         })
     else:

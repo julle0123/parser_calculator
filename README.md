@@ -138,6 +138,8 @@ pip install pdfplumber beautifulsoup4 numpy
 
 ## 실행
 
+### 단일 파일 평가 (`evaluate.py`)
+
 ```bash
 # 기본 실행 (PDF/페이지 수 없어도 동작)
 python evaluate.py parsed.json
@@ -153,6 +155,68 @@ python evaluate.py parsed.json --pdf document.pdf --output result.json
 
 # z-score 계산 (30개 이상 누적 후 유효)
 python evaluate.py parsed.json --history history.json
+```
+
+### 일괄 평가 (`batch_run.py`)
+
+디렉터리 안의 JSON 파일을 한 번에 모두 평가합니다.
+
+```bash
+# 현재 디렉터리의 모든 JSON 평가
+python batch_run.py
+
+# 특정 디렉터리 지정
+python batch_run.py ./results/
+
+# 배치 요약을 JSON으로 저장
+python batch_run.py ./results/ --output summary.json
+
+# 파일별 상세 result_*.json 저장
+python batch_run.py ./results/ --output-dir scored/
+
+# 한국어 보고서 텍스트 저장 (비개발자용)
+python batch_run.py ./results/ --output summary.json --report report.txt
+```
+
+`--output summary.json` 형식 (감점 항목에 `reason` 포함):
+
+```jsonc
+{
+  "total": 36,
+  "scores": { "max": 100.0, "min": 93.0, "avg": 98.4 },
+  "files": [
+    {
+      "file": "doc1.json",
+      "score": 100.0,
+      "grade": "A",
+      "deduction": 0,
+      "deductions": []
+    },
+    {
+      "file": "doc2.json",
+      "score": 93.0,
+      "grade": "A",
+      "deduction": -7,
+      "deductions": [
+        {
+          "check": "table_structure",
+          "deduction": -7,
+          "detail": {
+            "total_tables": 9,
+            "broken_tables": 2,
+            "broken_ratio": 0.2222,
+            "broken_table_details": [
+              {
+                "page": 8,
+                "reason": "표의 1번째 행에 내용이 비정상적으로 몰려 있습니다. (1번째 행: 48칸, 나머지 행 평균: 5.3칸) 셀 병합이 많은 복잡한 표에서 파싱이 구조를 제대로 인식하지 못했을 가능성이 있습니다."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ---
@@ -284,7 +348,6 @@ python evaluate.py parsed.json --history history.json
 
 [미적용 — 해당 없음]
   page_coverage                  total_pages 미제공 (--pdf 또는 --pages 옵션 필요)
-  domain_patterns                custom_patterns 미설정 — evaluate(custom_patterns={...}) 전달 시 활성화
 ```
 
 ---
@@ -328,10 +391,13 @@ z = compute_zscore(current_score, history)
       "check": "ocr_avg_confidence",    // 체크 이름
       "applicable": true,               // true = 실제 측정됨
       "deduction": -10,                 // 이 체크의 감점 (0이면 통과)
-      "detail": {                       // 측정값 상세
+      "detail": {
         "total_words": 150,
         "avg_confidence": 0.921,
-        "p10_confidence": 0.874         // 하위 10% 백분위 (참고용)
+        "p10_confidence": 0.874,        // 하위 10% 백분위 (참고용)
+        "low_conf_samples": [           // 신뢰도 낮은 단어 예시 (감점 시 포함)
+          { "page": 3, "text": "운용", "confidence": 0.712 }
+        ]
       }
     },
     {
@@ -339,9 +405,12 @@ z = compute_zscore(current_score, history)
       "applicable": true,
       "deduction": -8,
       "detail": {
-        "low_conf_ratio": 0.093,        // confidence < 0.85 단어 비율
+        "low_conf_ratio": 0.093,
         "low_conf_count": 14,
-        "threshold": 0.85
+        "threshold": 0.85,
+        "low_conf_samples": [           // 신뢰도 낮은 단어 예시 (감점 시 포함)
+          { "page": 3, "text": "운용", "confidence": 0.712 }
+        ]
       }
     },
     {
@@ -364,11 +433,17 @@ z = compute_zscore(current_score, history)
     {
       "check": "table_structure",
       "applicable": true,
-      "deduction": 0,
+      "deduction": -7,
       "detail": {
-        "total_tables": 5,
-        "broken_tables": 0,
-        "broken_ratio": 0.0
+        "total_tables": 9,
+        "broken_tables": 2,
+        "broken_ratio": 0.2222,
+        "broken_table_details": [       // 이상 표별 위치·원인 (감점 시 포함)
+          {
+            "page": 8,
+            "reason": "표의 1번째 행에 내용이 비정상적으로 몰려 있습니다. (1번째 행: 48칸, 나머지 행 평균: 5.3칸) 셀 병합이 많은 복잡한 표에서 파싱이 구조를 제대로 인식하지 못했을 가능성이 있습니다."
+          }
+        ]
       }
     },
     {
@@ -376,18 +451,29 @@ z = compute_zscore(current_score, history)
       "applicable": true,
       "deduction": 0,
       "detail": {
-        "garbled_ratio": 0.0003,        // 깨진 문자 비율
+        "garbled_ratio": 0.0003,
         "garbled_count": 2,
         "total_chars": 6240
+        // garbled_locations: 감점 시 페이지·위치·발견 문자 포함
       }
     },
     {
       "check": "html_md_consistency",
       "applicable": true,
-      "deduction": 0,
+      "deduction": -3,
       "detail": {
-        "avg_similarity": 0.953,        // HTML↔Markdown 텍스트 유사도 (0~1)
-        "sample_pairs": 42
+        "avg_similarity": 0.878,
+        "sample_pairs": 50,
+        "low_similarity_samples": [     // 불일치 항목 예시 (감점 시 포함)
+          {
+            "page": 4,
+            "category": "heading1",
+            "similarity": 0.275,
+            "html": "○   위험도",
+            "markdown": "○ <label><input type=\"checkbox\"> 위험도</label>",
+            "reason": "HTML 버전과 Markdown 버전의 내용이 다르게 처리되었습니다. Markdown에 코드 태그가 텍스트로 그대로 남아 있어 파싱 과정에서 해당 요소를 Markdown 형식으로 변환하지 못한 것입니다."
+          }
+        ]
       }
     },
     {

@@ -25,6 +25,30 @@ _GARBLED_CHARS = frozenset("□■口▪▫○●◇◆替〓々〒▷▶◁◀"
 _KOREAN_DOC_THRESHOLD = 0.15  # 이 비율 초과 시 한국어 문서로 간주
 
 
+def _describe_consistency_diff(html: str, md: str) -> str:
+    has_tag_in_md = bool(re.search(r"<[a-zA-Z]", md))
+    if has_tag_in_md:
+        return (
+            "HTML 버전과 Markdown 버전의 내용이 다르게 처리되었습니다. "
+            "Markdown에 코드 태그가 텍스트로 그대로 남아 있어 "
+            "파싱 과정에서 해당 요소를 Markdown 형식으로 변환하지 못한 것입니다."
+        )
+    if len(html) > 0 and len(md) / max(len(html), 1) < 0.5:
+        return (
+            "Markdown 버전의 내용이 HTML 버전보다 현저히 짧습니다. "
+            "Markdown 변환 과정에서 일부 내용이 누락되었을 가능성이 있습니다."
+        )
+    if len(md) > 0 and len(html) / max(len(md), 1) < 0.5:
+        return (
+            "HTML 버전의 내용이 Markdown 버전보다 현저히 짧습니다. "
+            "HTML 변환 과정에서 일부 내용이 누락되었을 가능성이 있습니다."
+        )
+    return (
+        "HTML 버전과 Markdown 버전의 텍스트 내용이 일치하지 않습니다. "
+        "같은 내용을 두 형식으로 표현한 것이므로 동일해야 합니다."
+    )
+
+
 class _TagStripper(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -72,19 +96,31 @@ def _is_garbled(ch: str) -> bool:
 
 def score_text_quality(elements: list[dict]) -> list[dict]:
     all_chars: list[str] = []
-    html_texts: list[str] = []
-    md_texts: list[str] = []
+    garbled_locations: list[dict] = []
+    pair_details: list[tuple] = []
 
     for el in elements:
         content = el.get("content", {})
         html_plain = _strip_html(content.get("html", "")).strip()
         md_plain = _strip_markdown(content.get("markdown", "")).strip()
+        page = el.get("page")
+        category = el.get("category", "")
 
-        all_chars.extend(c for c in html_plain if not c.isspace())
+        non_space = [c for c in html_plain if not c.isspace()]
+        all_chars.extend(non_space)
+
+        garbled_in_el = [c for c in non_space if _is_garbled(c)]
+        if garbled_in_el:
+            garbled_locations.append({
+                "page": page,
+                "category": category,
+                "chars": list(dict.fromkeys(garbled_in_el))[:5],
+                "snippet": html_plain[:80],
+            })
 
         if html_plain and md_plain:
-            html_texts.append(html_plain)
-            md_texts.append(md_plain)
+            sim = SequenceMatcher(None, html_plain, md_plain).ratio()
+            pair_details.append((sim, page, category, html_plain, md_plain))
 
     checks = []
     non_space_count = len(all_chars)
@@ -100,15 +136,19 @@ def score_text_quality(elements: list[dict]) -> list[dict]:
         else:
             garbled_deduction = -7
 
+        detail: dict = {
+            "garbled_ratio": round(garbled_ratio, 4),
+            "garbled_count": garbled_count,
+            "total_chars": non_space_count,
+        }
+        if garbled_count > 0:
+            detail["garbled_locations"] = garbled_locations[:5]
+
         checks.append({
             "check": "garbled_chars",
             "applicable": True,
             "deduction": garbled_deduction,
-            "detail": {
-                "garbled_ratio": round(garbled_ratio, 4),
-                "garbled_count": garbled_count,
-                "total_chars": non_space_count,
-            },
+            "detail": detail,
         })
     else:
         checks.append({
@@ -119,14 +159,10 @@ def score_text_quality(elements: list[dict]) -> list[dict]:
             "detail": {},
         })
 
-    sample_pairs = list(zip(html_texts, md_texts))[:50]
-    if sample_pairs:
-        sims = [
-            SequenceMatcher(None, h, m).ratio()
-            for h, m in sample_pairs
-            if h and m
-        ]
-        avg_sim = sum(sims) / len(sims) if sims else 1.0
+    if pair_details:
+        sampled = pair_details[:50]
+        sims = [s for s, *_ in sampled]
+        avg_sim = sum(sims) / len(sims)
 
         if avg_sim >= 0.90:
             consistency_deduction = 0
@@ -135,14 +171,29 @@ def score_text_quality(elements: list[dict]) -> list[dict]:
         else:
             consistency_deduction = -6
 
+        consistency_detail: dict = {
+            "avg_similarity": round(avg_sim, 4),
+            "sample_pairs": len(sampled),
+        }
+        if consistency_deduction < 0:
+            worst = sorted(sampled, key=lambda x: x[0])[:5]
+            consistency_detail["low_similarity_samples"] = [
+                {
+                    "page": page,
+                    "category": cat,
+                    "similarity": round(sim, 3),
+                    "html": h[:80],
+                    "markdown": m[:80],
+                    "reason": _describe_consistency_diff(h, m),
+                }
+                for sim, page, cat, h, m in worst
+            ]
+
         checks.append({
             "check": "html_md_consistency",
             "applicable": True,
             "deduction": consistency_deduction,
-            "detail": {
-                "avg_similarity": round(avg_sim, 4),
-                "sample_pairs": len(sample_pairs),
-            },
+            "detail": consistency_detail,
         })
     else:
         checks.append({

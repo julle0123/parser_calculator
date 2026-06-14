@@ -14,8 +14,12 @@ import numpy as np
 
 def score_confidence(elements: list[dict]) -> list[dict]:
     all_words = []
+    word_page_pairs = []
     for el in elements:
-        all_words.extend(el.get("words", []))
+        page = el.get("page")
+        for w in el.get("words", []):
+            all_words.append(w)
+            word_page_pairs.append((page, w))
 
     if not all_words:
         return [
@@ -58,25 +62,44 @@ def score_confidence(elements: list[dict]) -> list[dict]:
     else:
         low_deduction = -17
 
+    low_conf_samples = sorted(
+        [
+            {
+                "page": page,
+                "text": (w.get("text") or w.get("word") or "")[:20],
+                "confidence": round(float(w.get("confidence", 0)), 4),
+            }
+            for page, w in word_page_pairs
+            if float(w.get("confidence", 0)) < 0.85
+        ],
+        key=lambda x: x["confidence"],
+    )[:5]
+
+    avg_detail: dict = {
+        "total_words": len(confidences),
+        "avg_confidence": round(avg_conf, 4),
+        "p10_confidence": round(p10_conf, 4),  # 참고용 — 점수 미반영
+    }
+    low_detail: dict = {
+        "low_conf_ratio": round(low_conf_ratio, 4),
+        "low_conf_count": int(np.sum(confidences < 0.85)),
+        "threshold": 0.85,
+    }
+    if low_conf_samples:
+        avg_detail["low_conf_samples"] = low_conf_samples
+        low_detail["low_conf_samples"] = low_conf_samples
+
     return [
         {
             "check": "ocr_avg_confidence",
             "applicable": True,
             "deduction": avg_deduction,
-            "detail": {
-                "total_words": len(confidences),
-                "avg_confidence": round(avg_conf, 4),
-                "p10_confidence": round(p10_conf, 4),  # 참고용 — 점수 미반영
-            },
+            "detail": avg_detail,
         },
         {
             "check": "ocr_low_conf_ratio",
             "applicable": True,
             "deduction": low_deduction,
-            "detail": {
-                "low_conf_ratio": round(low_conf_ratio, 4),
-                "low_conf_count": int(np.sum(confidences < 0.85)),
-                "threshold": 0.85,
-            },
+            "detail": low_detail,
         },
     ]
