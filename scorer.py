@@ -1,17 +1,16 @@
 """
-최종 점수 산출 및 등급 판정.
+감점 방식 점수 산출 및 등급 판정.
 
-4개 컴포넌트 점수를 합산하고 Grade를 부여.
-문서 간 상대 비교를 위한 z-score 계산 기능 포함.
+100점에서 시작해 체크별 감점을 합산.
+문서 특성(words 존재, 한국어 여부 등)에 따라 적용 체크가 자동 결정됨.
 """
 
 import math
 from components.confidence import score_confidence
 from components.structure import score_structure
 from components.text_quality import score_text_quality
-from components.domain import score_domain
+from components.completeness import score_completeness
 
-# (최소점수 이상이면 해당 등급)
 _GRADE_TABLE = [
     (85, "A", "정상 처리"),
     (70, "B", "주의 — 재확인 권고"),
@@ -33,46 +32,37 @@ def _get_grade(score: float) -> tuple[str, str]:
     return "D", "실패 — 처리 보류"
 
 
-def _infer_total_pages(elements: list[dict]) -> int:
-    pages = [el.get("page", 0) for el in elements if el.get("page")]
-    return max(pages) if pages else 1
-
-
 def evaluate(
     parsed: dict,
     total_pages: int | None = None,
-    custom_patterns: dict[str, str] | None = None,
 ) -> dict:
     """
     Args:
         parsed: 업스테이지 Document Parse API 응답 JSON (dict)
-        total_pages: PDF 실제 총 페이지 수. None이면 elements에서 추론.
-        custom_patterns: 도메인 패턴 교체/추가. key=이름, value=정규식.
+        total_pages: PDF 실제 총 페이지 수.
+                     None이면 page_coverage 체크 skip.
 
     Returns:
-        score, grade, components 상세, caution 포함 dict
+        score, grade, checks 상세, caution 포함 dict
     """
     elements = parsed.get("elements", [])
 
-    if total_pages is None:
-        total_pages = _infer_total_pages(elements)
+    all_checks: list[dict] = []
+    all_checks.extend(score_confidence(elements))
+    all_checks.extend(score_structure(elements, total_pages))
+    all_checks.extend(score_text_quality(elements))
+    all_checks.extend(score_completeness(elements))
 
-    components = [
-        score_confidence(elements),
-        score_structure(elements, total_pages),
-        score_text_quality(elements),
-        score_domain(elements, custom_patterns),
-    ]
-
-    total = sum(c["score"] for c in components)
-    total = max(0.0, min(100.0, float(total)))
-    grade, grade_desc = _get_grade(total)
+    total_deduction = sum(c["deduction"] for c in all_checks)
+    score = max(0.0, min(100.0, 100.0 + float(total_deduction)))
+    grade, grade_desc = _get_grade(score)
 
     return {
-        "score": round(total, 2),
+        "score": round(score, 2),
         "grade": grade,
         "grade_description": grade_desc,
-        "components": {c["component"]: c for c in components},
+        "total_deduction": total_deduction,
+        "checks": all_checks,
         "caution": _CAUTION,
     }
 
@@ -82,9 +72,6 @@ def compute_zscore(score: float, history: list[float]) -> float | None:
     누적 문서 점수 리스트 대비 현재 문서의 z-score 계산.
     z < -2.0 이면 이상 문서로 판단.
     최소 30개 이상 누적 후 사용 권장.
-
-    Returns:
-        z-score (float) 또는 None (샘플 부족)
     """
     if len(history) < 30:
         return None

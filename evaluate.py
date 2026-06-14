@@ -1,5 +1,5 @@
 """
-업스테이지 Document Parse API 응답 품질 평가 CLI
+업스테이지 Document Parse API 응답 파싱 실패 징후 감지 CLI
 
 사용법:
     python evaluate.py <json파일> [옵션]
@@ -11,7 +11,6 @@
 """
 
 import argparse
-import io
 import json
 import sys
 from pathlib import Path
@@ -40,13 +39,42 @@ def _get_page_count_from_pdf(pdf_path: str) -> int | None:
         return None
 
 
+def _format_check_detail(check: dict) -> str:
+    d = check.get("detail", {})
+    name = check["check"]
+    if name == "ocr_avg_confidence":
+        return f"avg={d.get('avg_confidence', '?')}"
+    if name == "ocr_low_conf_ratio":
+        return f"ratio={d.get('low_conf_ratio', '?')}"
+    if name == "page_coverage":
+        return f"빈 {d.get('empty_page_count', '?')}/{d.get('total_pages', '?')}페이지"
+    if name == "coord_validity":
+        return f"이상 {d.get('invalid_coord_elements', '?')}/{d.get('total_elements', '?')}개"
+    if name == "table_structure":
+        return f"{d.get('broken_tables', '?')}/{d.get('total_tables', '?')} 구조 이상"
+    if name == "garbled_chars":
+        return f"ratio={d.get('garbled_ratio', '?')}"
+    if name == "html_md_consistency":
+        return f"유사도={d.get('avg_similarity', '?')}"
+    if name == "korean_ratio":
+        return f"ratio={d.get('korean_ratio', '?')}"
+    if name == "empty_element_ratio":
+        return f"빈 {d.get('empty_elements', '?')}/{d.get('total_elements', '?')}개"
+    if name == "table_html_missing":
+        return f"HTML 누락 {d.get('html_missing', '?')}/{d.get('total_tables', '?')}개"
+    if name == "word_fragmentation":
+        return f"평균 {d.get('avg_word_length', '?')}자/단어"
+    return ""
+
+
 def _print_summary(result: dict) -> None:
     score = result["score"]
     grade = result["grade"]
     desc = result["grade_description"]
+    total_deduction = result.get("total_deduction", 0)
 
-    print(f"\n{'='*52}")
-    print(f"  최종 점수 : {score} / 100")
+    print(f"\n{'='*56}")
+    print(f"  최종 점수 : {score} / 100  (감점 합계: {total_deduction})")
     print(f"  등급      : Grade {grade}  ({desc})")
 
     if "zscore" in result and result["zscore"] is not None:
@@ -54,25 +82,47 @@ def _print_summary(result: dict) -> None:
         flag = "  ⚠ 이상 문서 의심" if z < -2.0 else ""
         print(f"  z-score   : {z}{flag}")
 
-    print(f"{'='*52}")
+    print(f"{'='*56}")
 
-    print("\n[컴포넌트별 점수]")
-    for name, comp in result["components"].items():
-        print(f"  {name:<22} {comp['score']:>5} / {comp['max_score']}")
+    checks = result.get("checks", [])
+    deducted = [c for c in checks if c["applicable"] and c["deduction"] < 0]
+    passed   = [c for c in checks if c["applicable"] and c["deduction"] == 0]
+    skipped  = [c for c in checks if not c["applicable"]]
+
+    if deducted:
+        print("\n[감점 내역]")
+        for c in deducted:
+            detail_str = _format_check_detail(c)
+            print(f"  {c['check']:<30} {detail_str:<22} {c['deduction']:>4}")
+        print(f"  {'─'*56}")
+        print(f"  {'합계':<52} {total_deduction:>4}")
+    else:
+        print("\n[감점 없음 — 모든 적용 체크 통과]")
+
+    if passed:
+        print("\n[통과]")
+        for c in passed:
+            detail_str = _format_check_detail(c)
+            print(f"  {c['check']:<30} {detail_str}")
+
+    if skipped:
+        print("\n[미적용 — 해당 없음]")
+        for c in skipped:
+            print(f"  {c['check']:<30} {c.get('skip_reason', '')}")
 
     print(f"\n[주의] {result['caution']}\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="업스테이지 Document Parse API 응답 품질 평가"
+        description="업스테이지 Document Parse API 응답 파싱 실패 징후 감지"
     )
     parser.add_argument("input", help="파싱 결과 JSON 파일 경로")
 
     page_group = parser.add_mutually_exclusive_group()
     page_group.add_argument(
         "--pdf", default=None,
-        help="원본 PDF 파일 경로 — 정확한 총 페이지 수 자동 추출 (pdfplumber 필요)"
+        help="원본 PDF 파일 경로 — 총 페이지 수 자동 추출 (pdfplumber 필요)"
     )
     page_group.add_argument(
         "--pages", type=int, default=None,
@@ -89,7 +139,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # 입력 JSON 로드
     input_path = Path(args.input)
     if not input_path.exists():
         print(f"[오류] 파일을 찾을 수 없습니다: {input_path}", file=sys.stderr)
@@ -101,7 +150,6 @@ def main() -> None:
         print(f"[오류] JSON 파싱 실패: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 총 페이지 수 결정
     total_pages = None
     if args.pdf:
         total_pages = _get_page_count_from_pdf(args.pdf)
@@ -110,10 +158,8 @@ def main() -> None:
     if total_pages is None and args.pages:
         total_pages = args.pages
 
-    # 평가 실행
     result = evaluate(parsed, total_pages=total_pages)
 
-    # z-score (히스토리 있을 때)
     if args.history:
         history_path = Path(args.history)
         if history_path.exists():
@@ -133,7 +179,6 @@ def main() -> None:
 
     _print_summary(result)
 
-    # 결과 저장
     if args.output:
         output_path = Path(args.output)
         output_path.write_text(

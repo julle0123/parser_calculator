@@ -33,21 +33,27 @@ langdetect(한글 비율과 중복 + 비결정성 리스크), pandas(미사용)
 
 ## 아키텍처
 
+**100점 감점 방식**: 문서 특성에 따라 해당 체크만 자동 적용, 나머지 skip.
+
 ```
-evaluate.py       CLI 진입점 — pdfplumber로 페이지 수 추출, argparse
-scorer.py         evaluate() — 4개 컴포넌트 조율 + 등급 판정
-                  compute_zscore() — 누적 문서 대비 이상값 탐지
+evaluate.py         CLI 진입점 — pdfplumber로 페이지 수 추출, argparse
+scorer.py           evaluate() — 전체 체크 수집 + 감점 합산 + 등급 판정
+                    compute_zscore() — 누적 문서 대비 이상값 탐지
 components/
-  confidence.py   words[].confidence 분포 → 35점
-                  (avg 15점 + 저신뢰비율 13점 + p10 7점)
-  structure.py    페이지 커버리지, 좌표 유효성, 표 HTML 구조 → 25점
-                  (bs4로 표 파싱)
-  text_quality.py 한글 비율, 깨진 문자, 언어감지, html↔md 일관성 → 20점
-                  (langdetect + rapidfuzz)
-  domain.py       정규식 패턴 존재 + 추출값 범위 검증 → 20점
+  confidence.py     words[].confidence → 최대 -35점
+                    (ocr_avg_confidence -18 + ocr_low_conf_ratio -17)
+                    words 없으면 전체 skip
+  structure.py      페이지 커버리지, 좌표 유효성, 표 구조 → 최대 -25점
+                    page_coverage: total_pages 제공 시만 / table_structure: table 있을 때만
+  text_quality.py   깨진 문자, html↔md 일관성, 한글 비율 → 최대 -20점
+                    korean_ratio: 한글 비율 15% 초과 시 자동 감지 후 적용
+  completeness.py   파싱 완결성 → 최대 -20점
+                    empty_element_ratio -10 / table_html_missing -5 / word_fragmentation -5
+                    문서 유형 무관, API 응답 구조에서 직접 파생
 ```
 
-각 컴포넌트 함수는 독립적으로 동작하며 `{"component", "score", "max_score", "details"}` 구조를 반환.
+각 체크 함수는 `list[dict]`를 반환.
+체크 dict 구조: `{"check", "applicable", "deduction", "detail"}` (skip 시 `"skip_reason"` 추가)
 
 **업스테이지 응답에서 유일한 직접 품질 신호는 `words[].confidence`.**
 `content.text` 최상위 필드는 API 설계상 비어있는 경우가 많으니 품질 신호로 쓰지 말 것.
@@ -70,9 +76,10 @@ threshold 조정, 컴포넌트 추가, 패턴 수정 등 요청 범위를 벗어
 
 | 작업 | 파일 | 위치 |
 |------|------|------|
-| 신뢰도 구간값 조정 | `components/confidence.py` | `score_confidence()` 내 if-elif |
-| p10 기준 조정 | `components/confidence.py` | `p10_score` 블록 |
+| OCR 감점 구간값 조정 | `components/confidence.py` | `score_confidence()` 내 if-elif |
 | 페이지 커버리지 기준 수정 | `components/structure.py` | `score_structure()` 내 page 블록 |
 | 깨진 문자 목록 추가 | `components/text_quality.py` | `_GARBLED_CHARS` |
-| 금융 패턴 추가/수정 | `components/domain.py` | `DEFAULT_PATTERNS`, `_VALUE_RULES` |
+| 한국어 문서 감지 기준 | `components/text_quality.py` | `_KOREAN_DOC_THRESHOLD` |
+| 빈 element 감점 기준 수정 | `components/completeness.py` | `score_completeness()` 내 empty 블록 |
+| word 단편화 기준 수정 | `components/completeness.py` | `word_fragmentation` 블록 |
 | 등급 기준 변경 | `scorer.py` | `_GRADE_TABLE` |

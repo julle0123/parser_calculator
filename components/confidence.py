@@ -1,13 +1,10 @@
 """
-① OCR 신뢰도 컴포넌트 (최대 35점)
+OCR 신뢰도 감점 체크 (최대 -35점)
 
-업스테이지 파서가 제공하는 유일한 직접 품질 신호.
-words[].confidence 분포를 분석해 OCR 품질을 수치화.
+words[].confidence 분포를 분석. words 데이터 없으면 두 체크 모두 skip.
 
-- 평균 confidence: 전반적 OCR 품질 (18점)
-- 저신뢰 단어 비율: 오인식 단어 빈도 (17점)
-- p10 confidence: 하위 10% 백분위수 — 점수 반영 없이 details에만 제공.
-  평균이 높아도 국소적 실패 구간이 있는지 확인하는 참고 지표.
+- ocr_avg_confidence: 전반적 OCR 품질 (최대 -18점)
+- ocr_low_conf_ratio: 오인식 단어 빈도 (최대 -17점)
 
 한계: confidence는 "이 글자가 맞다는 확신"이지 "실제로 맞다"는 보장이 아님.
 """
@@ -15,55 +12,71 @@ words[].confidence 분포를 분석해 OCR 품질을 수치화.
 import numpy as np
 
 
-def score_confidence(elements: list[dict]) -> dict:
+def score_confidence(elements: list[dict]) -> list[dict]:
     all_words = []
     for el in elements:
         all_words.extend(el.get("words", []))
 
-    result = {
-        "component": "confidence",
-        "max_score": 35,
-        "score": 0,
-        "details": {},
-    }
-
     if not all_words:
-        result["details"]["error"] = "words 데이터 없음"
-        return result
+        return [
+            {
+                "check": "ocr_avg_confidence",
+                "applicable": False,
+                "skip_reason": "words 데이터 없음",
+                "deduction": 0,
+                "detail": {},
+            },
+            {
+                "check": "ocr_low_conf_ratio",
+                "applicable": False,
+                "skip_reason": "words 데이터 없음",
+                "deduction": 0,
+                "detail": {},
+            },
+        ]
 
     confidences = np.array([w.get("confidence", 0.0) for w in all_words], dtype=float)
     avg_conf = float(np.mean(confidences))
     low_conf_ratio = float(np.mean(confidences < 0.85))
     p10_conf = float(np.percentile(confidences, 10))
 
-    # 평균 confidence (18점)
     if avg_conf >= 0.97:
-        avg_score = 18
+        avg_deduction = 0
     elif avg_conf >= 0.94:
-        avg_score = 13
+        avg_deduction = -5
     elif avg_conf >= 0.90:
-        avg_score = 7
+        avg_deduction = -10
     else:
-        avg_score = 0
+        avg_deduction = -18
 
-    # 저신뢰 단어 비율 — confidence < 0.85 (17점)
     if low_conf_ratio <= 0.03:
-        low_score = 17
+        low_deduction = 0
     elif low_conf_ratio <= 0.08:
-        low_score = 11
+        low_deduction = -6
     elif low_conf_ratio <= 0.15:
-        low_score = 5
+        low_deduction = -12
     else:
-        low_score = 0
+        low_deduction = -17
 
-    result["score"] = avg_score + low_score
-    result["details"] = {
-        "total_words": len(confidences),
-        "avg_confidence": round(avg_conf, 4),
-        "avg_confidence_score": avg_score,
-        "low_conf_ratio": round(low_conf_ratio, 4),
-        "low_conf_count": int(np.sum(confidences < 0.85)),
-        "low_conf_ratio_score": low_score,
-        "p10_confidence": round(p10_conf, 4),  # 참고용 — 점수 미반영
-    }
-    return result
+    return [
+        {
+            "check": "ocr_avg_confidence",
+            "applicable": True,
+            "deduction": avg_deduction,
+            "detail": {
+                "total_words": len(confidences),
+                "avg_confidence": round(avg_conf, 4),
+                "p10_confidence": round(p10_conf, 4),  # 참고용 — 점수 미반영
+            },
+        },
+        {
+            "check": "ocr_low_conf_ratio",
+            "applicable": True,
+            "deduction": low_deduction,
+            "detail": {
+                "low_conf_ratio": round(low_conf_ratio, 4),
+                "low_conf_count": int(np.sum(confidences < 0.85)),
+                "threshold": 0.85,
+            },
+        },
+    ]

@@ -1,7 +1,7 @@
-# 업스테이지 Document Parse 품질 평가 시스템
+# 업스테이지 Document Parse 파싱 실패 징후 감지 필터
 
 업스테이지(Upstage) Document Parse API의 JSON 응답을 입력받아
-파싱 품질을 수치화하는 자동 평가 도구.
+파싱 실패 징후를 100점 감점 방식으로 수치화하는 도구.
 
 ---
 
@@ -22,6 +22,111 @@
 
 ---
 
+## 코드 실행 구조
+
+### 전체 흐름
+
+```
+사용자 명령
+  python evaluate.py parsed.json --pages 5 --output result.json
+        │
+        ▼
+  [evaluate.py]  ── JSON 파일 로드
+                 ── scorer.evaluate() 호출
+        │
+        ▼
+  [scorer.py]    ── 4개 컴포넌트를 순서대로 실행
+        │
+        ├── [confidence.py]   OCR 신뢰도 체크 2개
+        ├── [structure.py]    구조 무결성 체크 3개
+        ├── [text_quality.py] 텍스트 품질 체크 3개
+        └── [completeness.py] 파싱 완결성 체크 3개
+        │
+        ▼
+  감점 합산: 100 + 각 체크 deduction 합계
+  등급 판정: 85↑→A / 70↑→B / 50↑→C / 그 외→D
+        │
+        ▼
+  [evaluate.py]  ── 화면 출력
+                 ── result.json 저장 (--output 지정 시)
+```
+
+---
+
+### 각 컴포넌트가 API 응답에서 읽는 필드
+
+업스테이지 Document Parse API는 파싱 결과를 `elements` 배열로 반환합니다.
+각 컴포넌트는 그 안의 서로 다른 필드를 읽어 감점 여부를 판단합니다.
+
+```
+Upstage API 응답 JSON
+└── elements[]                     ← 파싱된 블록 목록 (단락, 표, 그림 등)
+      ├── page                     ← 몇 번째 페이지인지
+      ├── category                 ← 블록 유형 (paragraph / table / figure 등)
+      ├── coordinates[]            ← 페이지 내 위치 (정규화 0~1)
+      │     ├── x
+      │     └── y
+      ├── content
+      │     ├── html               ← HTML 형식 텍스트
+      │     ├── markdown           ← Markdown 형식 텍스트
+      │     └── text               ← 일반 텍스트
+      └── words[]                  ← 단어 단위 OCR 결과
+            ├── text               ← 단어 텍스트
+            └── confidence         ← OCR 신뢰도 (0~1)
+```
+
+| 컴포넌트 | 읽는 필드 | 측정하는 것 |
+|---------|-----------|------------|
+| `confidence.py` | `words[].confidence` | OCR이 얼마나 확신하는지 |
+| `structure.py` | `page`, `coordinates`, `content.html` (표만) | 페이지 누락·좌표 이상·표 구조 붕괴 |
+| `text_quality.py` | `content.html`, `content.markdown` | 깨진 문자·한글 비율·HTML↔MD 불일치 |
+| `completeness.py` | `content` 전체, `words[].text` | 빈 블록·표 HTML 누락·단어 단편화 |
+
+---
+
+### 체크 하나의 판단 과정 (예: `ocr_avg_confidence`)
+
+```
+1. elements 전체를 순회하며 words[] 수집
+2. 모든 단어의 confidence 값 평균 계산
+3. 평균값을 구간에 대입해 감점 결정
+
+   avg ≥ 0.97  →  감점 없음 (deduction = 0)
+   avg ≥ 0.94  →  -5점
+   avg ≥ 0.90  →  -10점
+   avg < 0.90  →  -18점
+
+4. words 데이터가 아예 없으면 → applicable: false (skip)
+```
+
+모든 체크가 이 패턴을 따릅니다.
+측정값을 구간에 넣어 감점(deduction)을 결정하고, 해당 없으면 skip.
+
+---
+
+### 최종 점수 계산
+
+```
+100점
+ - ocr_avg_confidence  deduction   (0 / -5 / -10 / -18 중 하나)
+ - ocr_low_conf_ratio  deduction   (0 / -6 / -12 / -17 중 하나)
+ - page_coverage       deduction   (0 / -5 / -10 중 하나, total_pages 있을 때)
+ - coord_validity      deduction   (0 / -4 / -8 중 하나)
+ - table_structure     deduction   (0 / -3 / -7 중 하나, 표 있을 때)
+ - garbled_chars       deduction   (0 / -4 / -7 중 하나, 텍스트 있을 때)
+ - html_md_consistency deduction   (0 / -3 / -6 중 하나)
+ - korean_ratio        deduction   (0 / -3 / -7 중 하나, 한국어 문서일 때)
+ - empty_element_ratio deduction   (0 / -4 / -10 중 하나)
+ - table_html_missing  deduction   (0 / -2 / -5 중 하나, 표 있을 때)
+ - word_fragmentation  deduction   (0 / -2 / -5 중 하나, words 있을 때)
+= 최종 점수 (최소 0, 최대 100)
+```
+
+각 체크는 **티어 중 하나만** 적용됩니다.
+예) `ocr_avg_confidence`가 0.88이면 -10점 하나만 감점. -5점과 중복 적용 없음.
+
+---
+
 ## 설치
 
 ```bash
@@ -34,68 +139,153 @@ pip install pdfplumber beautifulsoup4 numpy
 ## 실행
 
 ```bash
-# PDF로 페이지 수 자동 추출 (권장)
-python evaluate.py <파싱결과.json> --pdf document.pdf
+# 기본 실행 (PDF/페이지 수 없어도 동작)
+python evaluate.py parsed.json
+
+# PDF로 페이지 수 자동 추출 (page_coverage 체크 활성화)
+python evaluate.py parsed.json --pdf document.pdf
 
 # 페이지 수 직접 지정
-python evaluate.py <파싱결과.json> --pages 10
+python evaluate.py parsed.json --pages 10
 
 # 상세 결과 JSON 저장
-python evaluate.py <파싱결과.json> --pdf document.pdf --output result.json
+python evaluate.py parsed.json --pdf document.pdf --output result.json
 
 # z-score 계산 (30개 이상 누적 후 유효)
-python evaluate.py <파싱결과.json> --history history.json
+python evaluate.py parsed.json --history history.json
 ```
 
 ---
 
-## 점수 구성 (100점 만점)
+## 점수 구성 — 100점 감점 방식
 
-### ① OCR 신뢰도 — 35점
+100점에서 시작해 감지된 문제만 감점합니다.
+**문서 특성에 따라 해당 없는 체크는 자동으로 skip됩니다.**
 
-업스테이지 파서가 제공하는 유일한 직접 품질 신호 (`words[].confidence`).
-numpy로 분포를 분석하며, p10(하위 10% 백분위수)은 점수 미반영 참고 지표로 제공.
+### 감점 체크 목록
 
-| 지표 | 만점 | 기준 |
-|------|------|------|
-| 평균 confidence | 18점 | 0.97↑→18 / 0.94↑→13 / 0.90↑→7 / 미만→0 |
-| 저신뢰 단어 비율 (< 0.85) | 17점 | 3%↓→17 / 8%↓→11 / 15%↓→5 / 초과→0 |
+| 체크 항목 | 최대 감점 | 적용 조건 |
+|-----------|-----------|-----------|
+| `ocr_avg_confidence` | -18 | words 데이터 존재 시 |
+| `ocr_low_conf_ratio` | -17 | words 데이터 존재 시 |
+| `page_coverage` | -10 | --pdf 또는 --pages 제공 시 |
+| `coord_validity` | -8 | 항상 적용 |
+| `table_structure` | -7 | table element 존재 시 |
+| `garbled_chars` | -7 | 텍스트 20자 이상 시 |
+| `korean_ratio` | -7 | 한글 비율 15% 초과 시 (한국어 문서 자동 감지) |
+| `html_md_consistency` | -6 | HTML·markdown 양쪽 필드 존재 시 |
+| `empty_element_ratio` | -10 | 항상 적용 |
+| `table_html_missing` | -5 | table element 존재 시 |
+| `word_fragmentation` | -5 | words 데이터 존재 시 |
 
-### ② 구조 무결성 — 25점
+### 체크별 감점 기준
 
-파싱 결과의 기술적 완전성 검증. bs4(BeautifulSoup)로 malformed HTML에도 안정적으로 표 파싱.
+**OCR 평균 신뢰도** (`words[].confidence` 평균)
+```
+≥ 0.97 →  0점
+≥ 0.94 → -5점
+≥ 0.90 → -10점
+< 0.90 → -18점
+```
 
-| 지표 | 만점 | 기준 |
-|------|------|------|
-| 페이지 커버리지 | 10점 | 빈 페이지 0%→10 / 5%↓→6 / 초과→0 |
-| 좌표 유효성 (0~1 범위) | 8점 | 이상 0%→8 / 1%↓→4 / 초과→0 |
-| 표 구조 일관성 | 7점 | 불일치 0%→7 / 20%↓→4 / 초과→0 |
+**저신뢰 단어 비율** (confidence < 0.85 비율)
+```
+≤ 3%  →  0점
+≤ 8%  → -6점
+≤ 15% → -12점
+> 15% → -17점
+```
 
-### ③ 텍스트 품질 — 20점
+**페이지 커버리지** (element 없는 페이지 비율)
+```
+0%    →  0점
+≤ 5%  → -5점
+> 5%  → -10점
+```
 
-ground truth 없이 텍스트 자체의 이상 징후 감지.
+**좌표 유효성** (정규화 범위 0~1 이탈 비율)
+```
+0%    →  0점
+≤ 1%  → -4점
+> 1%  → -8점
+```
 
-| 지표 | 만점 | 기준 |
-|------|------|------|
-| 한글 문자 비율 | 7점 | 50%↑→7 / 30%↑→4 / 미만→1 |
-| 깨진 문자 비율 | 7점 | 0.5%↓→7 / 1.0%↓→4 / 초과→0 |
-| html↔markdown 일관성 | 6점 | 유사도 90%↑→6 / 70%↑→3 / 미만→0 |
+**표 구조** (행별 셀 수 불일치 표 비율)
+```
+0%    →  0점
+≤ 20% → -3점
+> 20% → -7점
+```
 
-> **한글 비율**: 한국 금융 문서에서 낮으면 OCR 실패 간접 신호
-> **깨진 문자**: □■口 등 대체문자, 한글 자모(ㄱㄴ…) 단독 등장 감지
-> **html↔markdown**: 동일 element의 두 포맷 텍스트 불일치 → 내부 처리 오류 신호
+**깨진 문자** (대체문자·한글자모 단독 등장 비율)
+```
+≤ 0.5% →  0점
+≤ 1.0% → -4점
+> 1.0% → -7점
+```
 
-### ④ 도메인 패턴 — 20점
+**HTML↔Markdown 일관성** (동일 element 텍스트 유사도)
+```
+≥ 0.90 →  0점
+≥ 0.70 → -3점
+< 0.70 → -6점
+```
 
-금융 문서 필수 패턴 존재 및 추출값 유효성 검증.
+**한글 비율** (한국어 문서 감지 시만)
+```
+≥ 50% →  0점
+≥ 30% → -3점
+< 30% → -7점
+```
 
-| 지표 | 만점 | 기준 |
-|------|------|------|
-| 필수 패턴 존재 (5개 × 2점) | 10점 | 날짜 / 비율(%) / 금액 / 위험 / 수수료 |
-| 수수료 범위 유효성 | 5점 | 추출값 0~30% 범위 내 90%↑ |
-| 위험등급 범위 유효성 | 5점 | 추출값 1~6 범위 내 90%↑ |
+**빈 element 비율** (html·text·markdown 모두 비어있는 element 비율)
+```
+0%    →  0점
+≤ 10% → -4점
+> 10% → -10점
+```
 
-> 패턴 미발견 시: 문서 유형 특성일 수 있으므로 해당 점수의 절반 부여
+**table HTML 누락** (table element인데 html 필드 없는 비율)
+```
+0%    →  0점
+≤ 20% → -2점
+> 20% → -5점
+```
+
+**word 단편화** (words 평균 글자 수)
+```
+≥ 2.0자 →  0점
+≥ 1.5자 → -2점
+< 1.5자 → -5점
+```
+
+---
+
+## 출력 예시
+
+```
+========================================================
+  최종 점수 : 74 / 100  (감점 합계: -26)
+  등급      : Grade B  (주의 — 재확인 권고)
+========================================================
+
+[감점 내역]
+  ocr_avg_confidence             avg=0.926              -10
+  ocr_low_conf_ratio             ratio=0.092            -12
+  table_structure                2/8 구조 이상           -3
+  ────────────────────────────────────────────────────────
+  합계                                                   -26
+
+[통과]
+  coord_validity                 이상 0/42개
+  garbled_chars                  ratio=0.0002
+  html_md_consistency            유사도=0.9401
+  korean_ratio                   ratio=0.7823
+
+[미적용 — 해당 없음]
+  page_coverage                  total_pages 미제공 (--pdf 또는 --pages 옵션 필요)
+  domain_patterns                custom_patterns 미설정 — evaluate(custom_patterns={...}) 전달 시 활성화
+```
 
 ---
 
@@ -107,20 +297,6 @@ ground truth 없이 텍스트 자체의 이상 징후 감지.
 | B | 70~84 | 주의 — 재확인 권고 |
 | C | 50~69 | 경고 — 파싱 재시도 권장 |
 | D | 0~49 | 실패 — 처리 보류 |
-
----
-
-## 문서 카테고리별 패턴 커스터마이징
-
-```python
-from scorer import evaluate
-
-custom = {
-    "contract_date": r"계약일\s*:\s*\d{4}",
-    "account_no":    r"\d{3}-\d{4}-\d{7}",
-}
-result = evaluate(parsed_json, total_pages=5, custom_patterns=custom)
-```
 
 ---
 
@@ -136,17 +312,180 @@ z = compute_zscore(current_score, history)
 
 ---
 
+## result.json 형식
+
+`--output result.json` 옵션을 쓰면 저장되는 파일의 전체 구조입니다.
+
+```jsonc
+{
+  "score": 82.0,                        // 최종 점수 (0~100)
+  "grade": "B",                         // 등급 (A / B / C / D)
+  "grade_description": "주의 - 재확인 권고",
+  "total_deduction": -18,               // 감점 합계 (음수)
+
+  "checks": [                           // 체크 11개, 순서 고정
+    {
+      "check": "ocr_avg_confidence",    // 체크 이름
+      "applicable": true,               // true = 실제 측정됨
+      "deduction": -10,                 // 이 체크의 감점 (0이면 통과)
+      "detail": {                       // 측정값 상세
+        "total_words": 150,
+        "avg_confidence": 0.921,
+        "p10_confidence": 0.874         // 하위 10% 백분위 (참고용)
+      }
+    },
+    {
+      "check": "ocr_low_conf_ratio",
+      "applicable": true,
+      "deduction": -8,
+      "detail": {
+        "low_conf_ratio": 0.093,        // confidence < 0.85 단어 비율
+        "low_conf_count": 14,
+        "threshold": 0.85
+      }
+    },
+    {
+      "check": "page_coverage",
+      "applicable": false,              // false = skip (측정 안 됨)
+      "skip_reason": "total_pages 미제공 (--pdf 또는 --pages 옵션 필요)",
+      "deduction": 0,
+      "detail": {}
+    },
+    {
+      "check": "coord_validity",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "total_elements": 42,
+        "invalid_coord_elements": 0,
+        "invalid_ratio": 0.0
+      }
+    },
+    {
+      "check": "table_structure",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "total_tables": 5,
+        "broken_tables": 0,
+        "broken_ratio": 0.0
+      }
+    },
+    {
+      "check": "garbled_chars",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "garbled_ratio": 0.0003,        // 깨진 문자 비율
+        "garbled_count": 2,
+        "total_chars": 6240
+      }
+    },
+    {
+      "check": "html_md_consistency",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "avg_similarity": 0.953,        // HTML↔Markdown 텍스트 유사도 (0~1)
+        "sample_pairs": 42
+      }
+    },
+    {
+      "check": "korean_ratio",
+      "applicable": true,               // 한글 비율 > 15% → 한국어 문서로 감지
+      "deduction": 0,
+      "detail": {
+        "korean_ratio": 0.871,
+        "korean_count": 5435,
+        "total_chars": 6240
+      }
+    },
+    {
+      "check": "empty_element_ratio",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "total_elements": 42,
+        "empty_elements": 0,            // html + text + markdown 모두 빈 element 수
+        "empty_ratio": 0.0
+      }
+    },
+    {
+      "check": "table_html_missing",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "total_tables": 5,
+        "html_missing": 0,              // html 필드가 없는 table element 수
+        "missing_ratio": 0.0
+      }
+    },
+    {
+      "check": "word_fragmentation",
+      "applicable": true,
+      "deduction": 0,
+      "detail": {
+        "total_words": 150,
+        "avg_word_length": 3.94         // 단어 평균 글자 수 (< 1.5이면 단편화)
+      }
+    }
+  ],
+
+  "caution": "이 점수는 파싱 실패 징후를 감지하는 필터입니다. ..."
+
+  // z-score 옵션 사용 시 추가 필드
+  // "zscore": -1.23,
+  // "zscore_note": "정상 범위"
+}
+```
+
+### applicable 필드 이해하기
+
+| applicable | deduction | 의미 |
+|-----------|-----------|------|
+| `true` | `0` | 측정했고 문제 없음 (통과) |
+| `true` | `-N` | 측정했고 문제 발견 (감점) |
+| `false` | `0` | 해당 없어서 측정 안 함 (skip) |
+
+`applicable: false`인 체크는 점수에 영향을 주지 않습니다.
+예) words 데이터가 없는 문서는 `ocr_avg_confidence`가 skip되며 감점도 없습니다.
+
+---
+
+## Python API
+
+```python
+import json
+from scorer import evaluate
+
+with open("parsed.json", encoding="utf-8") as f:
+    parsed = json.load(f)
+
+result = evaluate(
+    parsed,
+    total_pages=10,   # 없으면 page_coverage 체크 skip
+)
+
+print(result["score"])       # 74.0
+print(result["grade"])       # "B"
+for check in result["checks"]:
+    if check["deduction"] < 0:
+        print(check["check"], check["deduction"])
+```
+
+---
+
 ## 프로젝트 구조
 
 ```
 parser_cal/
-├── evaluate.py          # CLI 진입점
-├── scorer.py            # 컴포넌트 오케스트레이션 + 등급 판정 + z-score
+├── evaluate.py           # CLI 진입점
+├── scorer.py             # 감점 합산 + 등급 판정 + z-score
 ├── components/
-│   ├── confidence.py    # ① OCR 신뢰도 (35점)
-│   ├── structure.py     # ② 구조 무결성 (25점)
-│   ├── text_quality.py  # ③ 텍스트 품질 (20점)
-│   └── domain.py        # ④ 도메인 패턴 (20점)
+│   ├── confidence.py     # OCR 신뢰도 체크 (최대 -35점)
+│   ├── structure.py      # 구조 무결성 체크 (최대 -25점)
+│   ├── text_quality.py   # 텍스트 품질 체크 (최대 -20점)
+│   └── completeness.py   # 파싱 완결성 체크 (최대 -20점)
 ├── requirements.txt
 └── README.md
 ```
@@ -260,7 +599,7 @@ DOCR-Inspector는 28가지 오류 유형을 ground truth 없이 감지 가능.
 
 **제거 이유**:
 1. **비결정성**: seed 고정 없이는 같은 텍스트에 다른 결과 가능 → 점수 시스템에 부적합.
-2. **한글 비율 지표와 중복**: 한글 문자 비율이 높으면 langdetect도 ko 반환. 독립적인 추가 신호를 제공하지 않음.
+2. **한글 비율 지표와 중복**: 한글 문자 비율 15% 초과 시 자동 감지로 대체. 독립적인 추가 신호 없음.
 
 ---
 

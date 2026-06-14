@@ -1,19 +1,17 @@
 """
-③ 텍스트 품질 컴포넌트 (최대 20점)
+텍스트 품질 감점 체크 (최대 -20점)
 
-ground truth 없이 텍스트 자체의 품질 이상 징후를 감지.
-내용이 정확한지는 알 수 없으나, 명백한 품질 저하는 탐지 가능.
+- garbled_chars:      깨진 문자 비율 (최대 -7점, 텍스트 20자 이상 시)
+- html_md_consistency: HTML↔MD 불일치 (최대 -6점, 양쪽 필드 있을 때)
+- korean_ratio:       한글 비율 저하 (최대 -7점, 한국어 문서 감지 시)
 
-- 한글 문자 비율: 한국 금융 문서에서 한글 비율 저하 = OCR 실패 간접 신호 (7점)
-- 깨진 문자 감지: OCR 실패 대체 문자 및 한글 자모 단독 등장 탐지 (7점)
-- html↔markdown 일관성: 동일 element의 두 포맷 간 텍스트 불일치 탐지 (6점)
+한국어 문서 감지 기준: 전체 비공백 문자 중 한글 음절 비율 > 15%
 """
 
 import re
 from difflib import SequenceMatcher
 from html.parser import HTMLParser
 
-# 한글 완성형 음절 범위 (가-힣)
 _KO_SYLLABLE_START = 0xAC00
 _KO_SYLLABLE_END = 0xD7A3
 
@@ -21,8 +19,10 @@ _KO_SYLLABLE_END = 0xD7A3
 _KO_JAMO_START = 0x3131
 _KO_JAMO_END = 0x318E
 
-# OCR 실패 시 자주 나타나는 대체/이상 문자
-_GARBLED_CHARS = frozenset("□■口▪▫○●◇◆替〓々〒※▷▶◁◀")
+# OCR 실패 시 나타나는 대체/이상 문자 (※ 제외 — 한국 문서에서 정상 사용)
+_GARBLED_CHARS = frozenset("□■口▪▫○●◇◆替〓々〒▷▶◁◀")
+
+_KOREAN_DOC_THRESHOLD = 0.15  # 이 비율 초과 시 한국어 문서로 간주
 
 
 class _TagStripper(HTMLParser):
@@ -70,14 +70,7 @@ def _is_garbled(ch: str) -> bool:
     return ch in _GARBLED_CHARS or _is_korean_jamo(ch)
 
 
-def score_text_quality(elements: list[dict]) -> dict:
-    result = {
-        "component": "text_quality",
-        "max_score": 20,
-        "score": 0,
-        "details": {},
-    }
-
+def score_text_quality(elements: list[dict]) -> list[dict]:
     all_chars: list[str] = []
     html_texts: list[str] = []
     md_texts: list[str] = []
@@ -93,39 +86,39 @@ def score_text_quality(elements: list[dict]) -> dict:
             html_texts.append(html_plain)
             md_texts.append(md_plain)
 
+    checks = []
     non_space_count = len(all_chars)
 
-    # 한글 문자 비율 (7점)
-    if non_space_count >= 20:
-        korean_count = sum(1 for c in all_chars if _is_korean_syllable(c))
-        korean_ratio = korean_count / non_space_count
-
-        if korean_ratio >= 0.50:
-            korean_score = 7
-        elif korean_ratio >= 0.30:
-            korean_score = 4
-        else:
-            korean_score = 1
-    else:
-        korean_ratio = None
-        korean_score = 7  # 텍스트 부족 → 감점 없음
-
-    # 깨진 문자 감지 (7점)
     if non_space_count >= 20:
         garbled_count = sum(1 for c in all_chars if _is_garbled(c))
         garbled_ratio = garbled_count / non_space_count
 
         if garbled_ratio <= 0.005:
-            garbled_score = 7
+            garbled_deduction = 0
         elif garbled_ratio <= 0.010:
-            garbled_score = 4
+            garbled_deduction = -4
         else:
-            garbled_score = 0
-    else:
-        garbled_ratio = None
-        garbled_score = 7
+            garbled_deduction = -7
 
-    # html↔markdown 일관성 (6점)
+        checks.append({
+            "check": "garbled_chars",
+            "applicable": True,
+            "deduction": garbled_deduction,
+            "detail": {
+                "garbled_ratio": round(garbled_ratio, 4),
+                "garbled_count": garbled_count,
+                "total_chars": non_space_count,
+            },
+        })
+    else:
+        checks.append({
+            "check": "garbled_chars",
+            "applicable": False,
+            "skip_reason": f"텍스트 부족 ({non_space_count}자, 20자 미만)",
+            "deduction": 0,
+            "detail": {},
+        })
+
     sample_pairs = list(zip(html_texts, md_texts))[:50]
     if sample_pairs:
         sims = [
@@ -136,23 +129,70 @@ def score_text_quality(elements: list[dict]) -> dict:
         avg_sim = sum(sims) / len(sims) if sims else 1.0
 
         if avg_sim >= 0.90:
-            consistency_score = 6
+            consistency_deduction = 0
         elif avg_sim >= 0.70:
-            consistency_score = 3
+            consistency_deduction = -3
         else:
-            consistency_score = 0
-    else:
-        avg_sim = None
-        consistency_score = 6  # 비교 대상 없음 → 감점 없음
+            consistency_deduction = -6
 
-    result["score"] = korean_score + garbled_score + consistency_score
-    result["details"] = {
-        "total_non_space_chars": non_space_count,
-        "korean_ratio": round(korean_ratio, 4) if korean_ratio is not None else "N/A",
-        "korean_ratio_score": korean_score,
-        "garbled_ratio": round(garbled_ratio, 4) if garbled_ratio is not None else "N/A",
-        "garbled_score": garbled_score,
-        "html_markdown_similarity": round(avg_sim, 4) if avg_sim is not None else "N/A",
-        "html_markdown_consistency_score": consistency_score,
-    }
-    return result
+        checks.append({
+            "check": "html_md_consistency",
+            "applicable": True,
+            "deduction": consistency_deduction,
+            "detail": {
+                "avg_similarity": round(avg_sim, 4),
+                "sample_pairs": len(sample_pairs),
+            },
+        })
+    else:
+        checks.append({
+            "check": "html_md_consistency",
+            "applicable": False,
+            "skip_reason": "HTML 또는 markdown 필드 없음",
+            "deduction": 0,
+            "detail": {},
+        })
+
+    if non_space_count >= 20:
+        korean_count = sum(1 for c in all_chars if _is_korean_syllable(c))
+        korean_ratio = korean_count / non_space_count
+
+        if korean_ratio > _KOREAN_DOC_THRESHOLD:
+            if korean_ratio >= 0.50:
+                korean_deduction = 0
+            elif korean_ratio >= 0.30:
+                korean_deduction = -3
+            else:
+                korean_deduction = -7
+
+            checks.append({
+                "check": "korean_ratio",
+                "applicable": True,
+                "deduction": korean_deduction,
+                "detail": {
+                    "korean_ratio": round(korean_ratio, 4),
+                    "korean_count": korean_count,
+                    "total_chars": non_space_count,
+                },
+            })
+        else:
+            checks.append({
+                "check": "korean_ratio",
+                "applicable": False,
+                "skip_reason": (
+                    f"한국어 문서 미감지 "
+                    f"(한글 비율 {round(korean_ratio * 100, 1)}%, 기준 {int(_KOREAN_DOC_THRESHOLD * 100)}%)"
+                ),
+                "deduction": 0,
+                "detail": {"korean_ratio": round(korean_ratio, 4)},
+            })
+    else:
+        checks.append({
+            "check": "korean_ratio",
+            "applicable": False,
+            "skip_reason": f"텍스트 부족 ({non_space_count}자, 20자 미만)",
+            "deduction": 0,
+            "detail": {},
+        })
+
+    return checks
