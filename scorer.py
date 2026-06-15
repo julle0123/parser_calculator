@@ -29,7 +29,7 @@ def _get_grade(score: float) -> tuple[str, str]:
     for threshold, grade, desc in _GRADE_TABLE:
         if score >= threshold:
             return grade, desc
-    return "D", "실패 — 처리 보류"
+    raise AssertionError(f"score {score} matched no grade — _GRADE_TABLE misconfigured")
 
 
 def evaluate(

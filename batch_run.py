@@ -13,9 +13,12 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
-if sys.stdout and hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+stdout = cast(Any, sys.stdout)
+
+if stdout and hasattr(stdout, "reconfigure"):
+    stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from scorer import evaluate
 

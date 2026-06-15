@@ -13,24 +13,19 @@
 import argparse
 import json
 import sys
+import pdfplumber
 from pathlib import Path
+from typing import Any, cast
 
-# Windows 콘솔 한글 출력
-if sys.stdout and hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+stdout = cast(Any, sys.stdout)
+
+if stdout and hasattr(stdout, "reconfigure"):
+    stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from scorer import evaluate, compute_zscore
 
-try:
-    import pdfplumber
-    _HAS_PDFPLUMBER = True
-except ImportError:
-    _HAS_PDFPLUMBER = False
-
 
 def _get_page_count_from_pdf(pdf_path: str) -> int | None:
-    if not _HAS_PDFPLUMBER:
-        return None
     try:
         with pdfplumber.open(pdf_path) as pdf:
             return len(pdf.pages)

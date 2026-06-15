@@ -46,17 +46,6 @@ def _describe_table_anomaly(counts: list[int]) -> str:
     )
 
 
-def _is_table_structure_valid(html: str) -> bool:
-    counts = _get_row_cell_counts(html)
-    if len(counts) < 2:
-        return True
-    mean = statistics.mean(counts)
-    if mean == 0:
-        return True
-    stdev = statistics.stdev(counts)
-    return (stdev / mean) <= 0.5
-
-
 def _is_valid_coord(coord: dict) -> bool:
     x = coord.get("x", -1)
     y = coord.get("y", -1)
