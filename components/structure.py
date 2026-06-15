@@ -19,7 +19,7 @@ def _get_row_cell_counts(html: str) -> list[int]:
         for row in soup.find_all("tr"):
             cell_count = 0
             for cell in row.find_all(["td", "th"]):
-                colspan = cell.get("colspan", 1)
+                colspan = str(cell.get("colspan") or "1")
                 try:
                     cell_count += int(colspan)
                 except (ValueError, TypeError):
