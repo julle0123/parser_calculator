@@ -13,15 +13,13 @@ import numpy as np
 
 
 def score_confidence(elements: list[dict]) -> list[dict]:
-    all_words = []
-    word_page_pairs = []
-    for el in elements:
-        page = el.get("page")
-        for w in el.get("words", []):
-            all_words.append(w)
-            word_page_pairs.append((page, w))
+    word_page_pairs = [
+        (el.get("page"), w)
+        for el in elements
+        for w in el.get("words", [])
+    ]
 
-    if not all_words:
+    if not word_page_pairs:
         return [
             {
                 "check": "ocr_avg_confidence",
@@ -39,7 +37,7 @@ def score_confidence(elements: list[dict]) -> list[dict]:
             },
         ]
 
-    confidences = np.array([w.get("confidence", 0.0) for w in all_words], dtype=float)
+    confidences = np.array([w.get("confidence", 0.0) for _, w in word_page_pairs], dtype=float)
     avg_conf = float(np.mean(confidences))
     low_conf_ratio = float(np.mean(confidences < 0.85))
     p10_conf = float(np.percentile(confidences, 10))
