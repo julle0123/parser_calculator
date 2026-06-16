@@ -495,7 +495,7 @@ z = compute_zscore(current_score, history)
       "deduction": -3,
       "detail": {
         "avg_similarity": 0.878,
-        "sample_pairs": 50,
+        "pairs": 50,
         "low_similarity_samples": [     // 불일치 항목 예시 (감점 시 포함)
           {
             "page": 4,

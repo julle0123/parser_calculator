@@ -176,9 +176,7 @@ def score_text_quality(elements: list[dict]) -> list[dict]:
 
     # --- HTML↔MD 일관성 체크: 두 필드가 모두 있는 element가 하나 이상일 때만 적용 ---
     if pair_details:
-        # 최대 50쌍만 샘플링 (element가 많아도 비교 비용 제한)
-        sampled = pair_details[:50]
-        sims = [s for s, *_ in sampled]
+        sims = [s for s, *_ in pair_details]
         avg_sim = sum(sims) / len(sims)
 
         if avg_sim >= 0.90:
@@ -190,10 +188,10 @@ def score_text_quality(elements: list[dict]) -> list[dict]:
 
         consistency_detail: dict = {
             "avg_similarity": round(avg_sim, 4),
-            "sample_pairs": len(sampled),
+            "pairs": len(pair_details),
         }
         if consistency_deduction < 0:
-            worst = sorted(sampled, key=lambda x: x[0])[:5]
+            worst = sorted(pair_details, key=lambda x: x[0])[:5]
             consistency_detail["low_similarity_samples"] = [
                 {
                     "page": page,
