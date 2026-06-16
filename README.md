@@ -130,13 +130,45 @@ Upstage API 응답 JSON
 ## 설치
 
 ```bash
-pip install pdfplumber beautifulsoup4 numpy
+pip install pdfplumber beautifulsoup4 numpy fastapi uvicorn python-multipart
 # 내부망: whl 파일로 반입 후 pip install *.whl
 ```
 
 ---
 
 ## 실행
+
+### API 서버 (`main.py`)
+
+```bash
+python main.py
+```
+
+서버가 `http://localhost:9101` 에서 시작됩니다.
+Swagger UI: `http://localhost:9101/docs`
+
+**엔드포인트**
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| `POST` | `/evaluate` | 파서 결과 JSON 파일 단건 평가 |
+| `POST` | `/evaluate/batch` | 파서 결과 JSON 파일 일괄 평가 |
+| `GET` | `/health` | 헬스체크 |
+
+**`POST /evaluate` 요청 (multipart/form-data)**
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `file` | 파일 | Y | 업스테이지 파서 결과 JSON 파일 |
+| `total_pages` | 정수 | N | PDF 총 페이지 수 (미제공 시 page_coverage skip) |
+
+**`POST /evaluate/batch` 요청 (multipart/form-data)**
+
+| 필드 | 타입 | 필수 | 설명 |
+|------|------|------|------|
+| `files` | 파일 목록 | Y | 업스테이지 파서 결과 JSON 파일 여러 개 |
+
+---
 
 ### 단일 파일 평가 (`evaluate.py`)
 
@@ -565,7 +597,16 @@ for check in result["checks"]:
 
 ```
 parser_cal/
+├── main.py               # API 서버 진입점 (python main.py)
+├── api.py                # FastAPI 앱 생성 + 라우터 등록
+├── routers/
+│   ├── evaluate.py       # POST /evaluate
+│   ├── batch.py          # POST /evaluate/batch
+│   └── health.py         # GET /health
+├── schemas/
+│   └── evaluate.py       # Pydantic 요청/응답 모델
 ├── evaluate.py           # CLI 진입점
+├── batch_run.py          # CLI 일괄 평가 진입점
 ├── scorer.py             # 감점 합산 + 등급 판정 + z-score
 ├── components/
 │   ├── confidence.py     # OCR 신뢰도 체크 (최대 -35점)
