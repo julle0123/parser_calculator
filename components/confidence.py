@@ -13,12 +13,14 @@ import numpy as np
 
 
 def score_confidence(elements: list[dict]) -> list[dict]:
+    # 모든 element의 words 배열을 평탄화. page 정보는 낮은 신뢰도 샘플 위치 표시용.
     word_page_pairs = [
         (el.get("page"), w)
         for el in elements
         for w in el.get("words", [])
     ]
 
+    # words가 아예 없으면 (이미지가 아닌 디지털 PDF 등) 두 체크 모두 적용 불가
     if not word_page_pairs:
         return [
             {
@@ -38,10 +40,11 @@ def score_confidence(elements: list[dict]) -> list[dict]:
         ]
 
     confidences = np.array([w.get("confidence", 0.0) for _, w in word_page_pairs], dtype=float)
-    avg_conf = float(np.mean(confidences))
-    low_conf_ratio = float(np.mean(confidences < 0.85))
-    p10_conf = float(np.percentile(confidences, 10))
+    avg_conf = float(np.mean(confidences))           # 전체 평균 신뢰도 (0~1)
+    low_conf_ratio = float(np.mean(confidences < 0.85))  # 신뢰도 0.85 미만 단어 비율
+    p10_conf = float(np.percentile(confidences, 10))     # 하위 10% 신뢰도 (참고용)
 
+    # 평균 신뢰도 구간별 감점: 97% 이상이면 정상, 그 아래로 내려갈수록 감점 증가
     if avg_conf >= 0.97:
         avg_deduction = 0
     elif avg_conf >= 0.94:
@@ -51,6 +54,7 @@ def score_confidence(elements: list[dict]) -> list[dict]:
     else:
         avg_deduction = -18
 
+    # 저신뢰도 단어 비율 구간별 감점: 3% 이하면 정상, 많을수록 감점 증가
     if low_conf_ratio <= 0.03:
         low_deduction = 0
     elif low_conf_ratio <= 0.08:
@@ -60,6 +64,7 @@ def score_confidence(elements: list[dict]) -> list[dict]:
     else:
         low_deduction = -17
 
+    # 신뢰도가 낮은 단어를 최대 5개 추출 (리포트 시 어느 단어가 문제인지 표시용)
     low_conf_samples = sorted(
         [
             {

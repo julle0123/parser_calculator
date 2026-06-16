@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 
 
 def _get_row_cell_counts(html: str) -> list[int]:
+    # 각 <tr>의 실질적인 열 수를 반환. colspan 속성을 반영해 병합 셀도 올바르게 계산.
+    # 빈 행(셀 없는 tr)은 제외. HTML 파싱 오류 시 빈 리스트 반환.
     try:
         soup = BeautifulSoup(html, "html.parser")
         counts = []
@@ -32,6 +34,8 @@ def _get_row_cell_counts(html: str) -> list[int]:
 
 
 def _describe_table_anomaly(counts: list[int]) -> str:
+    # 셀 수가 가장 많은 행을 기준으로 "어느 행이, 나머지 행 평균 대비 얼마나 튀는지" 설명.
+    # CV(변동계수) 이상 탐지에서 어떤 행이 원인인지 사람이 읽을 수 있는 형태로 변환.
     if not counts:
         return "표 구조를 파악할 수 없습니다."
     max_val = max(counts)
@@ -47,6 +51,8 @@ def _describe_table_anomaly(counts: list[int]) -> str:
 
 
 def _is_valid_coord(coord: dict) -> bool:
+    # Upstage API는 좌표를 페이지 크기 대비 0~1 정규화 비율로 반환.
+    # 이 범위를 벗어나거나 숫자가 아니면 파싱 오류로 간주.
     x = coord.get("x", -1)
     y = coord.get("y", -1)
     return (
@@ -58,8 +64,10 @@ def _is_valid_coord(coord: dict) -> bool:
 
 
 def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]:
+    # 세 가지 구조 체크(페이지 커버리지 → 좌표 유효성 → 표 구조)를 순서대로 실행해 리스트로 반환.
     checks = []
 
+    # --- 페이지 커버리지: total_pages를 알아야만 "빠진 페이지"를 계산할 수 있으므로 조건부 적용 ---
     if total_pages is not None and total_pages > 0:
         covered_pages = set(el.get("page") for el in elements if el.get("page"))
         empty_count = max(0, total_pages - len(covered_pages))
@@ -92,6 +100,7 @@ def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]
             "detail": {},
         })
 
+    # --- 좌표 유효성: coordinates 필드가 있는 element만 검사 (없는 element는 무시) ---
     if elements:
         invalid_count = sum(
             1 for el in elements
@@ -127,6 +136,7 @@ def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]
             "detail": {},
         })
 
+    # --- 표 구조: category == "table"인 element가 있을 때만 적용 ---
     table_elements = [el for el in elements if el.get("category") == "table"]
     if table_elements:
         broken_info = []
@@ -136,6 +146,7 @@ def score_structure(elements: list[dict], total_pages: int | None) -> list[dict]
             if len(counts) >= 2:
                 mean = statistics.mean(counts)
                 stdev = statistics.stdev(counts)
+                # CV(변동계수) = 표준편차 / 평균. 행 간 셀 수 편차가 클수록 구조 이상.
                 cv = stdev / mean if mean else 0
                 if cv > 0.5:
                     reason = _describe_table_anomaly(counts)

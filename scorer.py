@@ -26,6 +26,8 @@ _CAUTION = (
 
 
 def _get_grade(score: float) -> tuple[str, str]:
+    # _GRADE_TABLE은 내림차순(85→70→50→0)으로 정렬되어 있어,
+    # 점수 이상인 첫 번째 항목이 곧 해당 등급. 마지막 항목이 0이므로 항상 매칭됨.
     for threshold, grade, desc in _GRADE_TABLE:
         if score >= threshold:
             return grade, desc
@@ -47,12 +49,14 @@ def evaluate(
     """
     elements = parsed.get("elements", [])
 
+    # 네 컴포넌트의 체크 결과를 하나의 리스트로 합산
     all_checks: list[dict] = []
     all_checks.extend(score_confidence(elements))
     all_checks.extend(score_structure(elements, total_pages))
     all_checks.extend(score_text_quality(elements))
     all_checks.extend(score_completeness(elements))
 
+    # deduction은 모두 0 이하 값. 합산 후 100에서 빼면 최종 점수 (0 미만은 0으로 클램핑)
     total_deduction = sum(c["deduction"] for c in all_checks)
     score = max(0.0, min(100.0, 100.0 + float(total_deduction)))
     grade, grade_desc = _get_grade(score)

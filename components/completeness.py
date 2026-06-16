@@ -13,6 +13,7 @@ content 정확성이 아닌 기술적 완결성을 측정.
 
 
 def _is_content_empty(el: dict) -> bool:
+    # html / text / markdown 세 필드 중 하나라도 공백 아닌 내용이 있으면 비어있지 않다고 판단.
     content = el.get("content", {})
     return not any([
         (content.get("html") or "").strip(),
@@ -22,6 +23,8 @@ def _is_content_empty(el: dict) -> bool:
 
 
 def score_completeness(elements: list[dict]) -> list[dict]:
+    # 파싱 출력이 기술적으로 채워졌는지 확인. 내용의 정확성은 이 체크로 알 수 없음.
+    # 세 가지 체크: 빈 element 비율 → 표 HTML 누락 → word 단편화
     if not elements:
         return [
             {
@@ -93,6 +96,7 @@ def score_completeness(elements: list[dict]) -> list[dict]:
 
     all_words = [w for el in elements for w in el.get("words", [])]
     if all_words:
+        # API 버전에 따라 단어 텍스트 필드가 "text" 또는 "word"로 다를 수 있음
         word_texts = [
             w.get("text", "") or w.get("word", "")
             for w in all_words
@@ -102,6 +106,7 @@ def score_completeness(elements: list[dict]) -> list[dict]:
         if word_texts:
             avg_len = sum(len(t) for t in word_texts) / len(word_texts)
 
+            # 평균 글자 수 2.0 미만이면 단어가 글자 단위로 분해된 것으로 판단
             if avg_len >= 2.0:
                 frag_deduction = 0
             elif avg_len >= 1.5:

@@ -26,6 +26,7 @@ from scorer import evaluate, compute_zscore
 
 
 def _get_page_count_from_pdf(pdf_path: str) -> int | None:
+    # pdfplumber로 PDF를 열어 페이지 수만 추출. 실패 시 None 반환 → page_coverage 체크가 skip됨.
     try:
         with pdfplumber.open(pdf_path) as pdf:
             return len(pdf.pages)
@@ -35,6 +36,7 @@ def _get_page_count_from_pdf(pdf_path: str) -> int | None:
 
 
 def _format_check_detail(check: dict) -> str:
+    # 체크마다 detail 구조가 달라서 이름별로 분기해 CLI 한 줄 요약 문자열로 변환.
     d = check.get("detail", {})
     name = check["check"]
     if name == "ocr_avg_confidence":
@@ -63,6 +65,7 @@ def _format_check_detail(check: dict) -> str:
 
 
 def _print_summary(result: dict) -> None:
+    # 체크 결과를 "감점 발생 / 통과 / 미적용(skip)" 세 그룹으로 분류해 터미널에 출력.
     score = result["score"]
     grade = result["grade"]
     desc = result["grade_description"]
@@ -109,6 +112,7 @@ def _print_summary(result: dict) -> None:
 
 
 def main() -> None:
+    # 실행 순서: JSON 로드 → 페이지 수 결정 → 평가 → (선택) z-score → 출력 → (선택) 파일 저장
     parser = argparse.ArgumentParser(
         description="업스테이지 Document Parse API 응답 파싱 실패 징후 감지"
     )

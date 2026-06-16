@@ -45,8 +45,9 @@ components/
                     words 없으면 전체 skip
   structure.py      페이지 커버리지, 좌표 유효성, 표 구조 → 최대 -25점
                     page_coverage: total_pages 제공 시만 / table_structure: table 있을 때만
-  text_quality.py   깨진 문자, html↔md 일관성, 한글 비율 → 최대 -20점
-                    korean_ratio: 한글 비율 15% 초과 시 자동 감지 후 적용
+  text_quality.py   깨진 문자, html↔md 일관성, 한글 비율 → 최대 -16점
+                    korean_ratio: 한글 비율 50% 초과 시 한국어 문서 확정 후 적용
+                                  (15-50%는 혼합 문서와 OCR 열화 구별 불가 → skip)
   completeness.py   파싱 완결성 → 최대 -20점
                     empty_element_ratio -10 / table_html_missing -5 / word_fragmentation -5
                     문서 유형 무관, API 응답 구조에서 직접 파생
