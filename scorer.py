@@ -6,10 +6,13 @@
 """
 
 import math
-from components.confidence import score_confidence
-from components.structure import score_structure
-from components.text_quality import score_text_quality
-from components.completeness import score_completeness
+from components import (
+    BaseChecker,
+    ConfidenceChecker,
+    StructureChecker,
+    TextQualityChecker,
+    CompletenessChecker,
+)
 
 _GRADE_TABLE = [
     (85, "A", "정상 처리"),
@@ -34,57 +37,62 @@ def _get_grade(score: float) -> tuple[str, str]:
     raise AssertionError(f"score {score} matched no grade — _GRADE_TABLE misconfigured")
 
 
-def evaluate(
-    parsed: dict,
-    total_pages: int | None = None,
-) -> dict:
-    """
-    Args:
-        parsed: 업스테이지 Document Parse API 응답 JSON (dict)
-        total_pages: PDF 실제 총 페이지 수.
-                     None이면 page_coverage 체크 skip.
+class DocumentScorer:
+    def __init__(
+        self,
+        total_pages: int | None = None,
+        checkers: list[BaseChecker] | None = None,
+    ):
+        self._checkers: list[BaseChecker] = checkers or [
+            ConfidenceChecker(),
+            StructureChecker(total_pages=total_pages),
+            TextQualityChecker(),
+            CompletenessChecker(),
+        ]
 
-    Returns:
-        score, grade, checks 상세, caution 포함 dict
-    """
-    elements = parsed.get("elements", [])
+    def evaluate(self, parsed: dict) -> dict:
+        """
+        Args:
+            parsed: 업스테이지 Document Parse API 응답 JSON (dict)
 
-    # 네 컴포넌트의 체크 결과를 하나의 리스트로 합산
-    all_checks: list[dict] = []
-    all_checks.extend(score_confidence(elements))
-    all_checks.extend(score_structure(elements, total_pages))
-    all_checks.extend(score_text_quality(elements))
-    all_checks.extend(score_completeness(elements))
+        Returns:
+            score, grade, checks 상세, caution 포함 dict
+        """
+        elements = parsed.get("elements", [])
 
-    # deduction은 모두 0 이하 값. 합산 후 100에서 빼면 최종 점수 (0 미만은 0으로 클램핑)
-    total_deduction = sum(c["deduction"] for c in all_checks)
-    score = max(0.0, min(100.0, 100.0 + float(total_deduction)))
-    grade, grade_desc = _get_grade(score)
+        all_checks: list[dict] = []
+        for checker in self._checkers:
+            all_checks.extend(checker.score(elements))
 
-    return {
-        "score": round(score, 2),
-        "grade": grade,
-        "grade_description": grade_desc,
-        "total_deduction": total_deduction,
-        "checks": all_checks,
-        "caution": _CAUTION,
-    }
+        # deduction은 모두 0 이하 값. 합산 후 100에서 빼면 최종 점수 (0 미만은 0으로 클램핑)
+        total_deduction = sum(c["deduction"] for c in all_checks)
+        score = max(0.0, min(100.0, 100.0 + float(total_deduction)))
+        grade, grade_desc = _get_grade(score)
 
+        return {
+            "score": round(score, 2),
+            "grade": grade,
+            "grade_description": grade_desc,
+            "total_deduction": total_deduction,
+            "checks": all_checks,
+            "caution": _CAUTION,
+        }
 
-def compute_zscore(score: float, history: list[float]) -> float | None:
-    """
-    누적 문서 점수 리스트 대비 현재 문서의 z-score 계산.
-    z < -2.0 이면 이상 문서로 판단.
-    최소 30개 이상 누적 후 사용 권장.
-    """
-    if len(history) < 30:
-        return None
+    @staticmethod
+    def compute_zscore(score: float, history: list[float]) -> float | None:
+        """
+        누적 문서 점수 리스트 대비 현재 문서의 z-score 계산.
+        z < -2.0 이면 이상 문서로 판단.
+        최소 30개 이상 누적 후 사용 권장.
+        """
+        if len(history) < 30:
+            return None
 
-    mean = sum(history) / len(history)
-    variance = sum((x - mean) ** 2 for x in history) / len(history)
-    stdev = math.sqrt(variance)
+        mean = sum(history) / len(history)
+        variance = sum((x - mean) ** 2 for x in history) / len(history)
+        stdev = math.sqrt(variance)
 
-    if stdev == 0:
-        return 0.0
+        if stdev == 0:
+            return 0.0
 
-    return round((score - mean) / stdev, 4)
+        return round((score - mean) / stdev, 4)

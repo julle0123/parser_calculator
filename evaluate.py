@@ -22,7 +22,7 @@ stdout = cast(Any, sys.stdout)
 if stdout and hasattr(stdout, "reconfigure"):
     stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from scorer import evaluate, compute_zscore
+from scorer import DocumentScorer
 
 
 def _get_page_count_from_pdf(pdf_path: str) -> int | None:
@@ -157,7 +157,7 @@ def main() -> None:
     if total_pages is None and args.pages:
         total_pages = args.pages
 
-    result = evaluate(parsed, total_pages=total_pages)
+    result = DocumentScorer(total_pages=total_pages).evaluate(parsed)
 
     if args.history:
         history_path = Path(args.history)
@@ -166,7 +166,7 @@ def main() -> None:
                 history: list[float] = json.loads(
                     history_path.read_text(encoding="utf-8")
                 )
-                z = compute_zscore(result["score"], history)
+                z = DocumentScorer.compute_zscore(result["score"], history)
                 result["zscore"] = z
                 result["zscore_note"] = (
                     "이상 문서 의심 (z < -2.0)" if z is not None and z < -2.0

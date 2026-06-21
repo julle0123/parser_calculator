@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from schemas.evaluate import EvaluateResponse
-from scorer import evaluate as run_evaluate
+from scorer import DocumentScorer
 
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
 
@@ -24,5 +24,5 @@ async def evaluate_document(
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"JSON 파싱 실패: {e}")
 
-    result = run_evaluate(parsed, total_pages=total_pages)
+    result = DocumentScorer(total_pages=total_pages).evaluate(parsed)
     return EvaluateResponse(**result)

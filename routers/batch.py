@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, File, UploadFile
 
 from schemas.evaluate import BatchFileResult, BatchResponse, CheckResult
-from scorer import evaluate as run_evaluate
+from scorer import DocumentScorer
 
 router = APIRouter(prefix="/evaluate", tags=["evaluate"])
 
@@ -23,7 +23,7 @@ async def evaluate_batch(
         raw = await f.read()
         try:
             parsed = json.loads(raw)
-            r = run_evaluate(parsed)
+            r = DocumentScorer().evaluate(parsed)
             results.append(
                 BatchFileResult(
                     filename=f.filename or "",

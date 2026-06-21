@@ -20,7 +20,7 @@ stdout = cast(Any, sys.stdout)
 if stdout and hasattr(stdout, "reconfigure"):
     stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from scorer import evaluate
+from scorer import DocumentScorer
 
 
 _INTERNAL_SKIP = {"summary.json"}
@@ -250,11 +250,12 @@ def main() -> None:
         print(f"[정보] {target_dir} 에서 평가할 JSON 파일을 찾지 못했습니다.")
         return
 
+    scorer = DocumentScorer()
     results = []
     for path in files:
         try:
             parsed = json.loads(path.read_text(encoding="utf-8"))
-            r = evaluate(parsed)
+            r = scorer.evaluate(parsed)
 
             entry = {
                 "file": path.name,
