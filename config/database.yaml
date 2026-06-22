@@ -1,0 +1,16 @@
+database:
+  user: ADMIN
+  password: "Mj9527327@@@"
+  dsn: parserdb_tp
+  wallet_location: "C:/Users/USER/upstage_parser/wallet"
+  wallet_password: "Mj9527327@@@"
+  host: ~
+  port: ~
+  service_name: ~
+  pool:
+    size: 5
+    max_overflow: 10
+    timeout: 30
+    recycle: 3600
+    pre_ping: true
+  echo: false

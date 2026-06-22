@@ -10,14 +10,26 @@
     GET  /health          — 헬스체크
 """
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from db.engine import close_engine, init_engine
 from routers import batch, evaluate, health
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_engine()
+    yield
+    await close_engine()
+
 
 app = FastAPI(
     title="Document Parse Quality API",
     description="업스테이지 Document Parse API 결과의 파싱 실패 징후 감지",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.include_router(evaluate.router)
